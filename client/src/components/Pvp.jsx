@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { io } from "socket.io-client";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import toast, { Toaster } from "react-hot-toast";
 
 import chest1 from "../assets/PinkChest.svg";
@@ -10,7 +10,7 @@ import chest4 from "../assets/IronChest.svg";
 import chest5 from "../assets/PurpleChest.svg";
 import shovel from "../assets/Shovel.svg";
 
-import { FaPlay, FaShuffle } from "react-icons/fa6";
+import { FaPlay, FaShuffle, FaStop } from "react-icons/fa6";
 import { MdMyLocation } from "react-icons/md";
 
 const chestImages = [null, chest1, chest2, chest3, chest4, chest5];
@@ -22,126 +22,162 @@ const chestImageNames = {
   [chest5]: "Magical Chest",
 };
 
-const SOCKET_SERVER_URL = "http://192.168.1.10:9080";
+const SOCKET_SERVER_URL = "http://localhost:9080";
 
 const Pvp = () => {
   const location = useLocation();
-  const { playerName } = location.state || {};
-  const finalPlayerName = playerName || "guest";
-  const { searchId } = location.state;
+  const navigate = useNavigate();
+  const { playerName, searchId } = location.state || {};
 
   const [socket, setSocket] = useState(null);
+  const [connectionError, setConnectionError] = useState(null);
   const [searching, setSearching] = useState(false);
   const [gameStart, setGameStart] = useState(false);
   const [userReady, setUserReady] = useState(false);
-  const [opponentReady, setOpponentRedy] = useState(false);
-  const [Strategy, setStrategy] = useState(true);
+  const [opponentReady, setOpponentReady] = useState(false);
+  const [strategy, setStrategy] = useState(true);
   const [chestClicked, setChestClicked] = useState(false);
+  const [userTarget, setUserTarget] = useState("");
   const [userTurn, setUserTurn] = useState(true);
   const [gameOver, setGameOver] = useState(false);
   const [winnerMsg, setWinnerMsg] = useState(null);
-  const [userTarget, setUserTarget] = useState("");
-  const [opponentChest1, setOpponentChest1] = useState(null);
-  const [opponentChest2, setOpponentChest2] = useState(null);
-  const [opponentChest3, setOpponentChest3] = useState(null);
-  const [opponentChest4, setOpponentChest4] = useState(null);
-  const [opponentChest5, setOpponentChest5] = useState(null);
-  const [opponentGuess, setOpponentGuess] = useState(null);
   const [opponentName, setOpponentName] = useState("");
-  const [userChest1, setUserChest1] = useState(1);
-  const [userChest2, setUserChest2] = useState(2);
-  const [userChest3, setUserChest3] = useState(3);
-  const [userChest4, setUserChest4] = useState(4);
-  const [userChest5, setUserChest5] = useState(5);
+  const [userChests, setUserChests] = useState([1, 2, 3, 4, 5]);
+  const [opponentChests, setOpponentChests] = useState([
+    null,
+    null,
+    null,
+    null,
+    null,
+  ]);
+  const [opponentGuess, setOpponentGuess] = useState(null);
   const [playerScore, setPlayerScore] = useState(0);
   const [opponentScore, setOpponentScore] = useState(0);
   const [userGuessedElements, setUserGuessedElements] = useState(new Set());
 
-  const chestPositions = [
-    { position: userChest1, type: 1 },
-    { position: userChest2, type: 2 },
-    { position: userChest3, type: 3 },
-    { position: userChest4, type: 4 },
-    { position: userChest5, type: 5 },
-  ];
-  const userChestArray = useMemo(
-    () => [userChest1, userChest2, userChest3, userChest4, userChest5],
-    [userChest1, userChest2, userChest3, userChest4, userChest5]
+  const chestPositions = useMemo(
+    () =>
+      userChests.map((position, index) => ({
+        position,
+        type: index + 1,
+      })),
+    [userChests]
   );
-
-  const opponentChestArray = [
-    opponentChest1,
-    opponentChest2,
-    opponentChest3,
-    opponentChest4,
-    opponentChest5,
-  ];
 
   const generateRandomNumber = () => Math.floor(Math.random() * 64) + 1;
 
   const handleOpponentGuess = useCallback(() => {
-    if (!gameOver) {
-      let element;
-      element = document.getElementById(`box-${opponentGuess}`);
-      if (userChestArray.includes(opponentGuess)) {
+    if (!gameOver && opponentGuess !== null) {
+      const element = document.getElementById(`box-${opponentGuess}`);
+      if (element && userChests.includes(opponentGuess)) {
         element.style.backgroundColor = "green";
-
         setOpponentScore((prevScore) => prevScore + 1);
-      } else {
-        element.innerHTML = `<img class="shovel" src="${shovel}">`;
+      } else if (element) {
+        element.innerHTML = `<img class="shovel" src="${shovel}" alt="Shovel" />`;
       }
-
       setUserTurn(true);
     }
-  }, [gameOver, opponentGuess, userChestArray, setOpponentScore, setUserTurn]);
+  }, [gameOver, opponentGuess, userChests]);
 
   useEffect(() => {
     const newSocket = io(SOCKET_SERVER_URL, {
       transports: ["websocket"],
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+    });
+
+    newSocket.onAny((event, ...args) => {
+      console.log(`Received event: ${event}`, args);
     });
 
     newSocket.on("connect", () => {
       console.log("Connected to Socket.io server:", newSocket.id);
+      setConnectionError(null);
+    });
+
+    newSocket.on("connect_error", (error) => {
+      console.error("Socket connection error:", error.message, error.stack);
+      setConnectionError(
+        `Failed to connect to the server: ${error.message}. Please try again.`
+      );
+      toast.error(`Connection error: ${error.message}`);
     });
 
     newSocket.on("disconnect", () => {
       console.log("Disconnected from Socket.io server");
+      setSearching(false);
+      setGameStart((g) => {
+        if (g) toast.error("Disconnected from server. Game ended.");
+        return false;
+      });
+      setConnectionError("Disconnected from server. Please reconnect.");
     });
 
     newSocket.on("searching", () => {
       setSearching(true);
+      toast.loading("Searching for an opponent...");
     });
 
     newSocket.on("matched", (data) => {
-      const { name } = data;
-      setOpponentName(name);
+      if (!data || !data.name) {
+        console.error("Invalid matched event data:", data);
+        toast.error("Invalid match data received.");
+        return;
+      }
+      setOpponentName(data.name);
       setSearching(false);
       setGameStart(true);
+      toast.dismiss();
+      toast.success(`Matched with ${data.name}!`);
+    });
+
+    newSocket.on("matchmakingTimeout", (data) => {
+      setSearching(false);
+      toast.dismiss();
+    });
+
+    newSocket.on("searchCancelled", () => {
+      setSearching(false);
+      toast.dismiss();
+      toast.success("Matchmaking cancelled.");
+    });
+
+    newSocket.on("opponentDisconnected", (data) => {
+      setGameOver(true);
+      setWinnerMsg(data?.message || "Your opponent has left the game.");
+      toast.error(data?.message || "Opponent disconnected.");
     });
 
     newSocket.on("existingUsers", (users) => {
-      if (users.length > 0) {
+      if (Array.isArray(users) && users.length > 0) {
         setOpponentName(users[0]);
       }
     });
 
     newSocket.on("opponentReady", (data) => {
+      if (!data) {
+        console.error("Invalid opponentReady event data:", data);
+        return;
+      }
       const { ready, chest } = data;
       if (ready === 1) {
-        setOpponentRedy(true);
+        setOpponentReady(true);
       }
-      if (chest.length >= 5) {
-        setOpponentChest1(chest[0]);
-        setOpponentChest2(chest[1]);
-        setOpponentChest3(chest[2]);
-        setOpponentChest4(chest[3]);
-        setOpponentChest5(chest[4]);
+      if (Array.isArray(chest) && chest.length >= 5) {
+        setOpponentChests(chest);
       }
     });
 
     newSocket.on("opponentGuess", (data) => {
-      const { Id } = data;
-      setOpponentGuess(Id);
+      if (!data || !data.Id) {
+        console.error("Invalid opponentGuess event data:", data);
+        return;
+      }
+      setOpponentGuess(data.Id);
+    });
+
+    newSocket.on("error", (data) => {
+      toast.error(data?.message || "An error occurred.");
     });
 
     setSocket(newSocket);
@@ -158,13 +194,23 @@ const Pvp = () => {
   }, [opponentGuess, handleOpponentGuess]);
 
   useEffect(() => {
-    if (socket && searchId && finalPlayerName) {
-      console.log("Emitting searchStranger event:", {
-        name: finalPlayerName,
-      });
-      socket.emit("searchStranger", { name: finalPlayerName });
+    if (!playerName || !searchId) {
+      toast.error("Invalid access. Please start a new game.");
+      setConnectionError("Missing game data. Please start a new game.");
+      return;
     }
-  }, [socket, searchId, finalPlayerName]);
+    if (socket) {
+      console.log("Emitting searchStranger event:", { name: playerName });
+      socket.emit("searchStranger", { name: playerName });
+    }
+  }, [socket, searchId, playerName]);
+
+  const handleCancelSearch = () => {
+    if (socket && searching) {
+      socket.emit("cancelSearch");
+      setSearching(false);
+    }
+  };
 
   const gridItems1 = [];
   const gridItems2 = [];
@@ -177,9 +223,7 @@ const Pvp = () => {
         key={i}
         id={`box-${i}`}
         className="grid-item"
-        onClick={(e) => {
-          handleChestPosition(e, chestType, i);
-        }}
+        onClick={(e) => handleChestPosition(e, chestType, i)}
       >
         {chest && (
           <img
@@ -197,33 +241,31 @@ const Pvp = () => {
         key={i}
         id={`grid1-box-${i}`}
         className="grid-item"
-        onClick={(e) => UserGuess(e, i)}
+        onClick={(e) => userGuess(e, i)}
       ></div>
     );
   }
+
   const handleChestPosition = (e, chestType, i) => {
-    const setUserChests = [
-      setUserChest1,
-      setUserChest2,
-      setUserChest3,
-      setUserChest4,
-      setUserChest5,
-    ];
     if (!userReady) {
       if (chestType != null) {
         if (!chestClicked) {
           setChestClicked(true);
           setUserTarget(chestType);
         } else {
-          toast.error("a chest is already placed here");
+          toast.error("A chest is already placed here");
         }
       } else {
         if (chestClicked) {
-          setUserChests[userTarget - 1](i);
+          setUserChests((prev) => {
+            const newChests = [...prev];
+            newChests[userTarget - 1] = i;
+            return newChests;
+          });
           setChestClicked(false);
-          toast.loading(`Placed ${chestImageNames[chestImages[userTarget]]}`);
+          toast.success(`Placed ${chestImageNames[chestImages[userTarget]]}`);
         } else {
-          toast.error("cant place your chest here");
+          toast.error("Can't place your chest here");
         }
       }
     }
@@ -231,39 +273,32 @@ const Pvp = () => {
 
   const handleStrategy = () => {
     const ready = 1;
-    const chest = [userChest1, userChest2, userChest3, userChest4, userChest5];
-    socket.emit("userReady", { ready, chest });
+    socket.emit("userReady", { ready, chest: userChests });
     setUserReady(true);
   };
 
-  const UserGuess = (e, Id) => {
+  const userGuess = (e, Id) => {
     if (gameOver) {
       e.preventDefault();
-    } else {
-      if (!userGuessedElements.has(Id)) {
-        const index = opponentChestArray.indexOf(Id);
-        if (!Strategy && userTurn) {
-          setUserGuessedElements((prevGuessedElements) => {
-            const updatedUserGuessedElements = new Set(prevGuessedElements);
-            updatedUserGuessedElements.add(Id);
-            return updatedUserGuessedElements;
-          });
-          if (index !== -1) {
-            const src = chestImages[index + 1];
-            e.target.innerHTML = `<img src="${src}">`;
-            setPlayerScore(playerScore + 1);
-            toast.success(
-              `You Found ${chestImageNames[chestImages[index + 1]]}`
-            );
-          } else {
-            e.target.innerHTML = `<img class="shovel" src="${shovel}">`;
-          }
-          setUserTurn(false);
-          socket.emit("userGuess", { Id });
+      return;
+    }
+    if (!userGuessedElements.has(Id)) {
+      const index = opponentChests.indexOf(Id);
+      if (!strategy && userTurn) {
+        setUserGuessedElements((prev) => new Set(prev).add(Id));
+        if (index !== -1) {
+          const src = chestImages[index + 1];
+          e.target.innerHTML = `<img src="${src}" alt="Chest" />`;
+          setPlayerScore((prev) => prev + 1);
+          toast.success(`You found ${chestImageNames[chestImages[index + 1]]}`);
+        } else {
+          e.target.innerHTML = `<img class="shovel" src="${shovel}" alt="Shovel" />`;
         }
-      } else {
-        toast.error("Already Searched here");
+        setUserTurn(false);
+        socket.emit("userGuess", { Id });
       }
+    } else {
+      toast.error("Already searched here");
     }
   };
 
@@ -274,25 +309,16 @@ const Pvp = () => {
   }, [userReady, opponentReady]);
 
   const handleShuffle = () => {
-    if (Strategy) {
-      let chest1, chest2, chest3, chest4, chest5;
+    if (strategy) {
+      let newChests;
       let allUnique = false;
 
       while (!allUnique) {
-        chest1 = generateRandomNumber();
-        chest2 = generateRandomNumber();
-        chest3 = generateRandomNumber();
-        chest4 = generateRandomNumber();
-        chest5 = generateRandomNumber();
-        const chests = [chest1, chest2, chest3, chest4, chest5];
-        allUnique = new Set(chests).size === chests.length;
+        newChests = Array.from({ length: 5 }, () => generateRandomNumber());
+        allUnique = new Set(newChests).size === newChests.length;
       }
-      setUserChest1(chest1);
-      setUserChest2(chest2);
-      setUserChest3(chest3);
-      setUserChest4(chest4);
-      setUserChest5(chest5);
-      toast.success("successfully shuffled all chests");
+      setUserChests(newChests);
+      toast.success("Successfully shuffled all chests");
     }
   };
 
@@ -302,14 +328,60 @@ const Pvp = () => {
       setWinnerMsg("You Win!");
     } else if (opponentScore >= 5 && opponentScore > playerScore) {
       setGameOver(true);
-      setWinnerMsg(`${opponentName} Win`);
+      setWinnerMsg(`${opponentName} Wins`);
     }
   }, [playerScore, opponentScore, opponentName]);
 
   const handleGameOver = () => {
     setGameOver(false);
-    window.location.reload();
+    navigate("/");
   };
+
+  const handleRetryConnection = () => {
+    if (socket) {
+      socket.connect();
+    } else {
+      const newSocket = io(SOCKET_SERVER_URL, {
+        transports: ["websocket"],
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+      });
+      setSocket(newSocket);
+    }
+    setConnectionError(null);
+  };
+
+  if (!playerName || !searchId) {
+    return (
+      <div className="Bot Pvp-Custom Pvp">
+        <div className="error-container">
+          <h2>Error</h2>
+          <p>Invalid game data. Please start a new game from the home page.</p>
+          <button className="game-reset-btn" onClick={() => navigate("/")}>
+            Go to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (connectionError) {
+    return (
+      <div className="Bot Pvp-Custom Pvp">
+        <div className="error-container">
+          <h2>Connection Error</h2>
+          <p>{connectionError}</p>
+          <button className="game-reset-btn" onClick={handleRetryConnection}>
+            Retry Connection
+          </button>
+          <button className="game-reset-btn" onClick={() => navigate("/")}>
+            Go to Home
+          </button>
+        </div>
+        <Toaster />
+      </div>
+    );
+  }
 
   return (
     <div className="Bot Pvp-Custom Pvp">
@@ -334,16 +406,12 @@ const Pvp = () => {
           <div className="island your-island">
             <div className="island-header">
               Your Island{" "}
-              {!Strategy && userTurn && (
-                <MdMyLocation
-                  style={{
-                    color: "green",
-                  }}
-                />
+              {!strategy && userTurn && (
+                <MdMyLocation style={{ color: "green" }} />
               )}
             </div>
             <div className="grid-container">{gridItems1}</div>
-            {Strategy &&
+            {strategy &&
               (!userReady ? (
                 <div className="strategy-phase">
                   <div className="strategy-shuffle" onClick={handleShuffle}>
@@ -355,17 +423,17 @@ const Pvp = () => {
                 </div>
               ) : (
                 <div className="strategy-phase opponent ready">
-                  Waiting for Opponent....
+                  Waiting for Opponent...
                 </div>
               ))}
           </div>
           <div className="island opponent-island">
             <div className="island-header">{opponentName}'s Island</div>
             <div className="grid-container">{gridItems2}</div>
-            {Strategy &&
+            {strategy &&
               (opponentReady ? (
                 <div className="strategy-phase opponent ready">
-                  Waiting for you....
+                  Waiting for you...
                 </div>
               ) : (
                 <div className="strategy-phase opponent waiting">
@@ -375,12 +443,20 @@ const Pvp = () => {
           </div>
         </div>
       )}
+      {!searching && !gameStart && (
+        <div className="pvp-c-waiting">
+          <div className="pvp-c-waiting-container">
+            <div className="pvp-c-waiting-text">Connecting to server...</div>
+            <div className="loader"></div>
+          </div>
+        </div>
+      )}
       <div className={`game-over ${gameOver ? "active" : ""}`}>
         <div className="game-over-title">{winnerMsg}</div>
         <div className="game-over-score">Chests left: {5 - opponentScore}</div>
-        <div className="game-over-score">Chest Looted : {playerScore}</div>
+        <div className="game-over-score">Chests Looted: {playerScore}</div>
         <button className="game-reset-btn" onClick={handleGameOver}>
-          Play Again ?
+          Play Again?
         </button>
       </div>
       <Toaster />

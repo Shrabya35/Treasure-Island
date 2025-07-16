@@ -11,6 +11,7 @@ a {
   flex-direction: column;
   justify-content: center;
   align-items: center;
+  overflow: auto;
 }
 .home-top {
   display: flex;
@@ -54,6 +55,7 @@ a {
   justify-content: center;
   align-items: center;
   position: relative;
+  overflow: auto;
 }
 
 .home-title {

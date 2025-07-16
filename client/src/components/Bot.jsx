@@ -9,6 +9,7 @@ import shovel from "../assets/Shovel.svg";
 
 import { FaPlay, FaShuffle } from "react-icons/fa6";
 import toast, { Toaster } from "react-hot-toast";
+import { Shovel } from "lucide-react";
 
 const chestImages = [null, chest1, chest2, chest3, chest4, chest5];
 const chestImageNames = {

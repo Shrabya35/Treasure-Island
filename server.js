@@ -14,6 +14,47 @@ const io = new Server(server, {
 
 let waitingQueue = [];
 const matchedPlayers = {};
+let matchmakingLock = false;
+
+const MATCHMAKING_TIMEOUT = 30000;
+
+const tryMatchPlayers = () => {
+  if (matchmakingLock || waitingQueue.length < 2) return;
+  matchmakingLock = true;
+
+  try {
+    const user1 = waitingQueue.shift();
+    const user2 = waitingQueue.shift();
+
+    if (!user1.socket.connected || !user2.socket.connected) {
+      if (user1.socket.connected) waitingQueue.push(user1);
+      if (user2.socket.connected) waitingQueue.push(user2);
+      matchmakingLock = false;
+      return;
+    }
+
+    const roomId = `${user1.socket.id}-${user2.socket.id}`;
+    user1.socket.strangerRoomId = roomId;
+    user2.socket.strangerRoomId = roomId;
+
+    user1.socket.join(roomId);
+    user2.socket.join(roomId);
+
+    user1.socket.emit("matched", { name: user2.name });
+    user2.socket.emit("matched", { name: user1.name });
+
+    matchedPlayers[user1.socket.id] = user2.socket.id;
+    matchedPlayers[user2.socket.id] = user1.socket.id;
+
+    console.log(
+      `Users ${user1.name} and ${user2.name} matched in room ${roomId}`
+    );
+  } catch (error) {
+    console.error("Error during matchmaking:", error);
+  } finally {
+    matchmakingLock = false;
+  }
+};
 
 io.on("connection", (socket) => {
   console.log(`A user connected: ${socket.id}`);
@@ -59,35 +100,44 @@ io.on("connection", (socket) => {
     }
 
     socket.emit("existingUsers", usersInRoom);
-
     io.to(roomId).emit("updateUserCount", numUsers + 1);
   });
 
   socket.on("searchStranger", (data) => {
     const { name } = data;
-    console.log("User searching for a stranger");
+    console.log(`${name} searching for a stranger`);
+
+    if (waitingQueue.some((entry) => entry.socket.id === socket.id)) {
+      socket.emit("error", {
+        message: "You are already in the matchmaking queue.",
+      });
+      return;
+    }
+
     waitingQueue.push({ socket, name });
     socket.emit("searching");
 
-    if (waitingQueue.length >= 2) {
-      const user1 = waitingQueue.shift();
-      const user2 = waitingQueue.shift();
-      const roomId = `${user1.socket.id}-${user2.socket.id}`;
+    const timeout = setTimeout(() => {
+      waitingQueue = waitingQueue.filter(
+        (entry) => entry.socket.id !== socket.id
+      );
+      if (socket.connected) {
+        socket.emit("matchmakingTimeout", {
+          message: "No opponent found. Please try again.",
+        });
+      }
+    }, MATCHMAKING_TIMEOUT);
 
-      user1.socket.strangerRoomId = roomId;
-      user2.socket.strangerRoomId = roomId;
+    socket.on("cancelSearch", () => {
+      clearTimeout(timeout);
+      waitingQueue = waitingQueue.filter(
+        (entry) => entry.socket.id !== socket.id
+      );
+      console.log(`${name} cancelled matchmaking`);
+      socket.emit("searchCancelled", { message: "Matchmaking cancelled." });
+    });
 
-      user1.socket.join(roomId);
-      user2.socket.join(roomId);
-
-      user1.socket.emit("matched", { name: user2.name });
-      user2.socket.emit("matched", { name: user1.name });
-
-      matchedPlayers[user1.socket.id] = user2.socket.id;
-      matchedPlayers[user2.socket.id] = user1.socket.id;
-
-      console.log(`Users matched in room ${roomId}`);
-    }
+    tryMatchPlayers();
   });
 
   socket.on("userReady", (data) => {
@@ -113,19 +163,20 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     console.log(`A user disconnected: ${socket.id}`);
 
-    const waitingIndex = waitingQueue.findIndex(
-      (entry) => entry.socket.id === socket.id
+    waitingQueue = waitingQueue.filter(
+      (entry) => entry.socket.id !== socket.id
     );
-    if (waitingIndex !== -1) {
-      waitingQueue.splice(waitingIndex, 1);
-      console.log(`Removed ${socket.id} from waiting queue.`);
-    }
+    console.log(`Removed ${socket.id} from waiting queue.`);
 
     const opponentId = matchedPlayers[socket.id];
     if (opponentId) {
-      io.to(opponentId).emit("opponentDisconnected", {
-        message: "Your opponent has left the game.",
-      });
+      const opponentSocket = io.sockets.sockets.get(opponentId);
+      if (opponentSocket) {
+        opponentSocket.emit("opponentDisconnected", {
+          message: "Your opponent has left the game.",
+        });
+        opponentSocket.strangerRoomId = null;
+      }
       delete matchedPlayers[opponentId];
       delete matchedPlayers[socket.id];
     }
